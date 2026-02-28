@@ -1,5 +1,5 @@
 <%- include("layout", {
-  title: "الكاشير",
+  title: "شاشة الكابتن",
   user,
   body: `
   <div class="row g-3">
@@ -17,52 +17,146 @@
     <div class="col-12 col-lg-5">
       <div class="card glass p-3 h-100">
         <div class="d-flex justify-content-between align-items-center mb-2">
-          <h5 class="fw-bold m-0">السلة</h5>
+          <h5 class="fw-bold m-0">أوردر الكابتن</h5>
           <button id="clear" class="btn btn-outline-danger btn-sm">تفريغ</button>
         </div>
 
-        <div id="cart" class="vstack gap-2"></div>
-
-        <hr class="border-opacity-25"/>
-
-        <div class="row g-2">
-          <div class="col-4">
-            <label class="form-label text-secondary small">ضريبة %</label>
+        <div class="row g-2 mb-2">
+          <div class="col-6">
+            <label class="form-label text-secondary small">رقم الطاولة</label>
+            <input id="tableNo" class="form-control" placeholder="مثلاً: 12" />
+          </div>
+          <div class="col-6">
+            <label class="form-label text-secondary small">ضريبة % (اختياري)</label>
             <input id="tax" class="form-control" type="number" min="0" step="0.5" value="0">
           </div>
-          <div class="col-4">
-            <label class="form-label text-secondary small">خصم د.ع</label>
-            <input id="discount" class="form-control" type="number" min="0" step="250" value="0">
-          </div>
-          <div class="col-4">
-            <label class="form-label text-secondary small">الدفع</label>
-            <select id="payment" class="form-select">
-              <option value="cash">كاش</option>
-              <option value="card">بطاقة</option>
-              <option value="credit">آجل</option>
-            </select>
-          </div>
-
           <div class="col-12">
-            <label class="form-label text-secondary small">ملاحظة</label>
+            <label class="form-label text-secondary small">ملاحظة (اختياري)</label>
             <input id="note" class="form-control" maxlength="200" placeholder="مثلاً: بدون بصل">
           </div>
         </div>
 
+        <div id="cart" class="vstack gap-2"></div>
+
         <div class="mt-3 p-2 rounded-3 bg-dark bg-opacity-50">
           <div class="d-flex justify-content-between"><span class="text-secondary">المجموع</span><b id="sub">0</b></div>
           <div class="d-flex justify-content-between"><span class="text-secondary">الضريبة</span><b id="taxAmt">0</b></div>
-          <div class="d-flex justify-content-between"><span class="text-secondary">الخصم</span><b id="discAmt">0</b></div>
           <div class="d-flex justify-content-between fs-5"><span>الإجمالي</span><b id="total">0</b></div>
         </div>
 
         <div class="d-grid gap-2 mt-3">
-          <button id="checkout" class="btn btn-primary btn-lg">إتمام + طباعة</button>
+          <button id="sendOrder" class="btn btn-primary btn-lg">إرسال الأوردر</button>
         </div>
       </div>
     </div>
   </div>
 
-  <div id="printArea" class="print-area" hidden></div>
-  <script src="/public/pos.js"></script>
+  <script>
+  // نسخة مبسطة من pos.js بس ترسل OPEN order
+  let menu={categories:[],products:[]}, activeCat="الكل", cart=[];
+  const $=id=>document.getElementById(id);
+  const fmt=n=>(Math.round(Number(n)||0)).toLocaleString("ar-IQ")+" د.ع";
+  const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
+  $("reload").onclick=loadMenu; $("clear").onclick=()=>{cart=[];renderCart();};
+  $("search").oninput=renderProducts; $("tax").oninput=renderTotals;
+  $("sendOrder").onclick=sendOrder;
+
+  loadMenu();
+
+  async function loadMenu(){ const r=await fetch("/api/menu"); menu=await r.json(); renderChips(); renderProducts(); renderCart(); }
+  function renderChips(){
+    const cats=["الكل",...menu.categories.map(c=>c.name)];
+    $("chips").innerHTML="";
+    cats.forEach(c=>{
+      const d=document.createElement("div");
+      d.className="chip"+(c===activeCat?" active":"");
+      d.textContent=c;
+      d.onclick=()=>{activeCat=c;renderChips();renderProducts();};
+      $("chips").appendChild(d);
+    });
+  }
+  function renderProducts(){
+    const q=($("search").value||"").trim().toLowerCase();
+    const filtered=menu.products.filter(p=>{
+      const mc=activeCat==="الكل"?true:p.category_name===activeCat;
+      const mq=q? p.name.toLowerCase().includes(q):true;
+      return mc && mq;
+    });
+    $("grid").innerHTML="";
+    filtered.forEach(p=>{
+      const card=document.createElement("div");
+      card.className="pos-card";
+      card.innerHTML=\`
+        <div class="name">\${esc(p.name)}</div>
+        <div class="meta d-flex justify-content-between">
+          <span>\${esc(p.category_name||"—")}</span>
+          <span><b>\${fmt(p.price_iqd)}</b></span>
+        </div>
+        <button class="btn btn-primary w-100 mt-2">إضافة</button>\`;
+      card.querySelector("button").onclick=()=>addToCart(p);
+      $("grid").appendChild(card);
+    });
+    if(!filtered.length) $("grid").innerHTML=\`<div class="text-secondary p-3">ماكو نتائج.</div>\`;
+  }
+  function addToCart(p){
+    const f=cart.find(x=>x.product_id===p.id);
+    if(f) f.qty+=1; else cart.push({product_id:p.id,name:p.name,price_iqd:p.price_iqd,qty:1});
+    renderCart();
+  }
+  function totals(){
+    const sub=cart.reduce((s,i)=>s+i.price_iqd*i.qty,0);
+    const taxPct=Math.max(0,Number($("tax").value)||0);
+    const taxAmt=Math.round(sub*taxPct/100);
+    const total=Math.max(0,sub+taxAmt);
+    return {sub,taxPct,taxAmt,total};
+  }
+  function renderTotals(){
+    const t=totals();
+    $("sub").textContent=fmt(t.sub);
+    $("taxAmt").textContent=fmt(t.taxAmt);
+    $("total").textContent=fmt(t.total);
+  }
+  function renderCart(){
+    $("cart").innerHTML="";
+    if(!cart.length){ $("cart").innerHTML=\`<div class="text-secondary">السلة فارغة.</div>\`; renderTotals(); return; }
+    cart.forEach(it=>{
+      const row=document.createElement("div");
+      row.className="p-2 rounded-3 bg-dark bg-opacity-50 border border-light border-opacity-10";
+      row.innerHTML=\`
+        <div class="d-flex justify-content-between">
+          <div>
+            <div class="fw-bold">\${esc(it.name)}</div>
+            <div class="text-secondary small">\${fmt(it.price_iqd)} للواحد</div>
+          </div>
+          <div class="text-end">
+            <div class="fw-bold">\${fmt(it.price_iqd*it.qty)}</div>
+            <div class="btn-group btn-group-sm mt-1">
+              <button class="btn btn-outline-light">+</button>
+              <button class="btn btn-outline-light" disabled>\${it.qty}</button>
+              <button class="btn btn-outline-light">-</button>
+              <button class="btn btn-outline-danger">حذف</button>
+            </div>
+          </div>
+        </div>\`;
+      const [bPlus,,bMinus,bDel]=row.querySelectorAll("button");
+      bPlus.onclick=()=>{it.qty++;renderCart();};
+      bMinus.onclick=()=>{it.qty--; if(it.qty<=0) cart=cart.filter(x=>x!==it); renderCart();};
+      bDel.onclick=()=>{cart=cart.filter(x=>x!==it);renderCart();};
+      $("cart").appendChild(row);
+    });
+    renderTotals();
+  }
+  async function sendOrder(){
+    if(!cart.length) return alert("السلة فارغة.");
+    const tableNo=($("tableNo").value||"").trim();
+    if(!tableNo) return alert("اكتب رقم الطاولة.");
+    const t=totals();
+    const payload={ table_no: tableNo, items: cart, tax_pct: t.taxPct, discount_iqd: 0, note: $("note").value||"" };
+    const res=await fetch("/api/orders/open",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    const data=await res.json();
+    if(!res.ok) return alert(data.error||"صار خطأ.");
+    alert("تم إرسال الأوردر ✅ رقم: #"+data.order.order_no);
+    cart=[]; $("note").value=""; renderCart();
+  }
+  </script>
 `}) %>
