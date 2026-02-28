@@ -1,259 +1,323 @@
+const path = require("path");
 const express = require("express");
 const session = require("express-session");
+const SQLiteStore = require("connect-sqlite3")(session);
+const Database = require("better-sqlite3");
 const bcrypt = require("bcrypt");
-const path = require("path");
 
 const app = express();
-app.set("view engine", "ejs");
-app.set("views", path.join(__dirname, "views"));
+const PORT = process.env.PORT || 3000;
 
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
-app.use("/public", express.static(path.join(__dirname, "public")));
+// ===== DB (SQLite) =====
+const db = new Database(path.join(__dirname, "pos.db"));
+db.exec(`PRAGMA journal_mode = WAL;`);
 
-app.use(
-  session({
-    secret: "CHANGE_THIS_SECRET_NOW_123456789",
-    resave: false,
-    saveUninitialized: false,
-    cookie: { sameSite: "lax" },
-  })
+db.exec(`
+CREATE TABLE IF NOT EXISTS users(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('admin','cashier','captain')),
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-// ===== أدوات =====
-const fmtIQD = (n) => (Math.round(Number(n) || 0)).toLocaleString("ar-IQ") + " د.ع";
-const todayKey = (d = new Date()) => d.toISOString().slice(0, 10);
-const clamp = (n, min = 0) => Math.max(min, Number(n) || 0);
+CREATE TABLE IF NOT EXISTS categories(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT UNIQUE NOT NULL
+);
 
-// ===== “قاعدة بيانات” مؤقتة بالذاكرة (تشتغل فوراً) =====
-const store = {
-  users: [],
-  categories: [],
-  products: [],
-  orders: [], // {id, orderNo, createdAt, paymentMethod, taxPct, discountIqd, subtotalIqd, taxIqd, totalIqd, note, items:[...] }
-};
+CREATE TABLE IF NOT EXISTS products(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  price_iqd INTEGER NOT NULL,
+  category_id INTEGER,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  FOREIGN KEY(category_id) REFERENCES categories(id)
+);
 
-function seed() {
-  if (store.users.length === 0) {
-    store.users.push({
-      id: 1,
-      username: "admin",
-      passwordHash: bcrypt.hashSync("admin123", 10),
-      role: "admin",
-    });
+CREATE TABLE IF NOT EXISTS orders(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_no INTEGER NOT NULL,
+  table_no TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  captain_username TEXT NOT NULL,
+  payment_method TEXT,
+  tax_pct REAL NOT NULL DEFAULT 0,
+  discount_iqd INTEGER NOT NULL DEFAULT 0,
+  subtotal_iqd INTEGER NOT NULL,
+  tax_iqd INTEGER NOT NULL,
+  total_iqd INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('open','paid','void')) DEFAULT 'open',
+  note TEXT
+);
+
+CREATE TABLE IF NOT EXISTS order_items(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id INTEGER NOT NULL,
+  product_id INTEGER,
+  name TEXT NOT NULL,
+  price_iqd INTEGER NOT NULL,
+  qty INTEGER NOT NULL,
+  line_total_iqd INTEGER NOT NULL,
+  FOREIGN KEY(order_id) REFERENCES orders(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at);
+`);
+
+function fmtIQD(n){ return (Math.round(Number(n)||0)).toLocaleString("ar-IQ")+" د.ع"; }
+function num(v){ return Math.max(0, Number(v)||0); }
+
+// ===== Seed users (admin + cashier) إذا ماكو =====
+(function seed(){
+  const c = db.prepare("SELECT COUNT(*) c FROM users").get().c;
+  if(c === 0){
+    db.prepare("INSERT INTO users(username,password_hash,role) VALUES (?,?,?)")
+      .run("admin", bcrypt.hashSync("admin123",10), "admin");
+    db.prepare("INSERT INTO users(username,password_hash,role) VALUES (?,?,?)")
+      .run("cashier", bcrypt.hashSync("cashier123",10), "cashier");
+
+    // أقسام/أصناف تجريبية
+    const cat = db.prepare("INSERT OR IGNORE INTO categories(name) VALUES (?)");
+    ["سندويچ","مقبلات","مشروبات"].forEach(x=>cat.run(x));
+    const getCat = db.prepare("SELECT id FROM categories WHERE name=?");
+    const insP = db.prepare("INSERT INTO products(name,price_iqd,category_id,is_active) VALUES (?,?,?,1)");
+    insP.run("برگر لحم",6000,getCat.get("سندويچ").id);
+    insP.run("بطاطا",2500,getCat.get("مقبلات").id);
+    insP.run("بيبسي",1000,getCat.get("مشروبات").id);
   }
-  if (store.categories.length === 0) {
-    store.categories.push({ id: 1, name: "سندويچ" }, { id: 2, name: "مقبلات" }, { id: 3, name: "مشروبات" });
-  }
-  if (store.products.length === 0) {
-    store.products.push(
-      { id: 1, name: "برگر لحم", priceIqd: 6000, categoryId: 1, isActive: true },
-      { id: 2, name: "بطاطا", priceIqd: 2500, categoryId: 2, isActive: true },
-      { id: 3, name: "بيبسي", priceIqd: 1000, categoryId: 3, isActive: true }
-    );
-  }
-}
-seed();
+})();
 
-const nextId = (arr) => (arr.length ? Math.max(...arr.map((x) => x.id)) + 1 : 1);
-const nextOrderNo = () => (store.orders.length ? Math.max(...store.orders.map((o) => o.orderNo)) + 1 : 1001);
+// ===== App =====
+app.set("view engine","ejs");
+app.set("views", path.join(__dirname,"views"));
 
-// ===== صلاحيات =====
-function requireAuth(req, res, next) {
-  if (!req.session.user) return res.redirect("/login");
+app.use(express.urlencoded({extended:true}));
+app.use(express.json());
+app.use("/public", express.static(path.join(__dirname,"public")));
+
+app.use(session({
+  store: new SQLiteStore({ db: "sessions.sqlite", dir: __dirname }),
+  secret: "CHANGE_THIS_SECRET_LONG_RANDOM",
+  resave:false,
+  saveUninitialized:false,
+  cookie:{ sameSite:"lax" }
+}));
+
+function requireAuth(req,res,next){
+  if(!req.session.user) return res.redirect("/login");
   next();
 }
-function requireAdmin(req, res, next) {
-  if (!req.session.user) return res.redirect("/login");
-  if (req.session.user.role !== "admin") return res.status(403).send("Forbidden");
-  next();
+function requireRole(...roles){
+  return (req,res,next)=>{
+    if(!req.session.user) return res.redirect("/login");
+    if(!roles.includes(req.session.user.role)) return res.status(403).send("Forbidden");
+    next();
+  };
 }
 
-// ===== صفحات =====
-app.get("/", (req, res) => {
-  if (!req.session.user) return res.redirect("/login");
+// ===== Pages =====
+app.get("/", (req,res)=>{
+  if(!req.session.user) return res.redirect("/login");
+  if(req.session.user.role === "cashier") return res.redirect("/cashier");
   return res.redirect("/pos");
 });
 
-app.get("/login", (req, res) => res.render("login", { error: null }));
+app.get("/login",(req,res)=>res.render("login",{error:null}));
 
-app.post("/login", (req, res) => {
-  const { username, password } = req.body;
-  const u = store.users.find((x) => x.username === username);
-  if (!u) return res.render("login", { error: "بيانات الدخول غلط." });
-  const ok = bcrypt.compareSync(password || "", u.passwordHash);
-  if (!ok) return res.render("login", { error: "بيانات الدخول غلط." });
-
-  req.session.user = { id: u.id, username: u.username, role: u.role };
-  res.redirect("/pos");
+app.post("/login",(req,res)=>{
+  const {username,password} = req.body;
+  const u = db.prepare("SELECT * FROM users WHERE username=? AND is_active=1").get(username);
+  if(!u) return res.render("login",{error:"بيانات الدخول غلط."});
+  if(!bcrypt.compareSync(password||"", u.password_hash)) return res.render("login",{error:"بيانات الدخول غلط."});
+  req.session.user = { id:u.id, username:u.username, role:u.role };
+  res.redirect("/");
 });
 
-app.post("/logout", (req, res) => req.session.destroy(() => res.redirect("/login")));
+app.post("/logout",(req,res)=>req.session.destroy(()=>res.redirect("/login")));
 
-app.get("/pos", requireAuth, (req, res) => {
-  res.render("pos", { user: req.session.user, fmtIQD });
+// ===== Captain POS =====
+app.get("/pos", requireRole("admin","captain"), (req,res)=>{
+  res.render("pos", { user:req.session.user, fmtIQD });
 });
 
-app.get("/admin/products", requireAdmin, (req, res) => {
-  const cats = store.categories.slice().sort((a, b) => a.name.localeCompare(b.name, "ar"));
-  const products = store.products
-    .map((p) => ({
-      ...p,
-      categoryName: (store.categories.find((c) => c.id === p.categoryId) || {}).name || "—",
-    }))
-    .sort((a, b) => Number(b.isActive) - Number(a.isActive) || a.name.localeCompare(b.name, "ar"));
-
-  res.render("admin_products", { user: req.session.user, cats, products, fmtIQD });
+// ===== Cashier screen =====
+app.get("/cashier", requireRole("admin","cashier"), (req,res)=>{
+  res.render("cashier", { user:req.session.user, fmtIQD });
 });
 
-app.get("/admin/reports", requireAdmin, (req, res) => {
-  res.render("reports", { user: req.session.user, fmtIQD });
+// ===== Admin: Products =====
+app.get("/admin/products", requireRole("admin"), (req,res)=>{
+  const cats = db.prepare("SELECT * FROM categories ORDER BY name").all();
+  const products = db.prepare(`
+    SELECT p.*, c.name AS category_name
+    FROM products p LEFT JOIN categories c ON c.id=p.category_id
+    ORDER BY p.is_active DESC, p.name
+  `).all();
+  res.render("admin_products", { user:req.session.user, cats, products, fmtIQD });
 });
 
-// ===== إدارة =====
-app.post("/admin/categories", requireAdmin, (req, res) => {
-  const name = String(req.body.name || "").trim();
-  if (name && !store.categories.some((c) => c.name === name)) {
-    store.categories.push({ id: nextId(store.categories), name });
+app.post("/admin/categories", requireRole("admin"), (req,res)=>{
+  const name = String(req.body.name||"").trim();
+  if(name) { try{ db.prepare("INSERT INTO categories(name) VALUES (?)").run(name); }catch{} }
+  res.redirect("/admin/products");
+});
+
+app.post("/admin/products", requireRole("admin"), (req,res)=>{
+  const name = String(req.body.name||"").trim();
+  const price = Math.max(0, Number(req.body.price_iqd)||0);
+  const category_id = req.body.category_id ? Number(req.body.category_id) : null;
+  if(name){
+    db.prepare("INSERT INTO products(name,price_iqd,category_id,is_active) VALUES (?,?,?,1)")
+      .run(name, price, category_id);
   }
   res.redirect("/admin/products");
 });
 
-app.post("/admin/products", requireAdmin, (req, res) => {
-  const name = String(req.body.name || "").trim();
-  const priceIqd = clamp(req.body.price_iqd, 0);
-  const categoryId = req.body.category_id ? Number(req.body.category_id) : null;
-  if (name) {
-    store.products.push({
-      id: nextId(store.products),
-      name,
-      priceIqd,
-      categoryId,
-      isActive: true,
-    });
-  }
+app.post("/admin/products/:id/toggle", requireRole("admin"), (req,res)=>{
+  db.prepare("UPDATE products SET is_active=CASE WHEN is_active=1 THEN 0 ELSE 1 END WHERE id=?")
+    .run(Number(req.params.id));
   res.redirect("/admin/products");
 });
 
-app.post("/admin/products/:id/toggle", requireAdmin, (req, res) => {
-  const id = Number(req.params.id);
-  const p = store.products.find((x) => x.id === id);
-  if (p) p.isActive = !p.isActive;
-  res.redirect("/admin/products");
+// ===== Admin: Users (Add Captains/Cashiers) =====
+app.get("/admin/users", requireRole("admin"), (req,res)=>{
+  const users = db.prepare("SELECT id,username,role,is_active,created_at FROM users ORDER BY role, username").all();
+  res.render("admin_users", { user:req.session.user, users });
 });
 
-// ===== API =====
-app.get("/api/menu", requireAuth, (req, res) => {
-  const categories = store.categories.slice().sort((a, b) => a.name.localeCompare(b.name, "ar"));
-  const products = store.products
-    .filter((p) => p.isActive)
-    .map((p) => ({
-      id: p.id,
-      name: p.name,
-      price_iqd: p.priceIqd,
-      category_id: p.categoryId,
-      category_name: (store.categories.find((c) => c.id === p.categoryId) || {}).name || "—",
-    }));
+app.post("/admin/users", requireRole("admin"), (req,res)=>{
+  const username = String(req.body.username||"").trim();
+  const password = String(req.body.password||"").trim();
+  const role = ["captain","cashier","admin"].includes(req.body.role) ? req.body.role : "captain";
+  if(!username || !password) return res.redirect("/admin/users");
+
+  try{
+    db.prepare("INSERT INTO users(username,password_hash,role,is_active) VALUES (?,?,?,1)")
+      .run(username, bcrypt.hashSync(password,10), role);
+  }catch{}
+  res.redirect("/admin/users");
+});
+
+app.post("/admin/users/:id/toggle", requireRole("admin"), (req,res)=>{
+  db.prepare("UPDATE users SET is_active=CASE WHEN is_active=1 THEN 0 ELSE 1 END WHERE id=?")
+    .run(Number(req.params.id));
+  res.redirect("/admin/users");
+});
+
+// ===== API: menu =====
+app.get("/api/menu", requireAuth, (req,res)=>{
+  const categories = db.prepare("SELECT * FROM categories ORDER BY name").all();
+  const products = db.prepare(`
+    SELECT p.id,p.name,p.price_iqd,p.category_id,c.name as category_name
+    FROM products p LEFT JOIN categories c ON c.id=p.category_id
+    WHERE p.is_active=1
+    ORDER BY c.name, p.name
+  `).all();
   res.json({ categories, products });
 });
 
-app.post("/api/orders", requireAuth, (req, res) => {
+// ===== API: captain creates OPEN order (no payment) =====
+app.post("/api/orders/open", requireRole("admin","captain"), (req,res)=>{
   const payload = req.body || {};
+  const table_no = String(payload.table_no || "").trim();
+  const note = String(payload.note || "").slice(0,200);
   const items = Array.isArray(payload.items) ? payload.items : [];
-  if (!items.length) return res.status(400).json({ error: "السلة فارغة." });
 
-  const taxPct = clamp(payload.tax_pct, 0);
-  const discountIqd = clamp(payload.discount_iqd, 0);
-  const paymentMethod = ["cash", "card", "credit"].includes(payload.payment_method) ? payload.payment_method : "cash";
-  const note = String(payload.note || "").slice(0, 200);
+  if(!table_no) return res.status(400).json({ error:"اكتب رقم الطاولة." });
+  if(items.length === 0) return res.status(400).json({ error:"السلة فارغة." });
+
+  const tax_pct = num(payload.tax_pct);
+  const discount_iqd = Math.round(num(payload.discount_iqd));
 
   let subtotal = 0;
-  const cleanItems = items.map((it) => {
-    const name = String(it.name || "").trim();
-    const price = clamp(it.price_iqd, 0);
-    const qty = Math.max(1, Number(it.qty) || 1);
-    const line = price * qty;
+  const cleanItems = items.map(it=>{
+    const name = String(it.name||"").trim();
+    const price = Math.max(0, Number(it.price_iqd)||0);
+    const qty = Math.max(1, Number(it.qty)||1);
+    const line = price*qty;
     subtotal += line;
-    return { product_id: it.product_id ? Number(it.product_id) : null, name, price_iqd: price, qty, line_total_iqd: line };
-  }).filter(x => x.name);
+    return { product_id: it.product_id ? Number(it.product_id): null, name, price_iqd: price, qty, line_total_iqd: line };
+  }).filter(x=>x.name);
 
-  const taxIqd = Math.round(subtotal * (taxPct / 100));
-  const totalIqd = Math.max(0, subtotal + taxIqd - discountIqd);
+  const tax_iqd = Math.round(subtotal*(tax_pct/100));
+  const total_iqd = Math.max(0, subtotal + tax_iqd - discount_iqd);
 
-  const order = {
-    id: nextId(store.orders),
-    orderNo: nextOrderNo(),
-    createdAt: new Date().toISOString(),
-    paymentMethod,
-    taxPct,
-    discountIqd,
-    subtotalIqd: subtotal,
-    taxIqd,
-    totalIqd,
-    note,
-    items: cleanItems,
-  };
-  store.orders.unshift(order);
+  const last = db.prepare("SELECT COALESCE(MAX(order_no),1000) m FROM orders").get().m;
+  const order_no = last + 1;
 
-  res.json({
-    order: {
-      order_no: order.orderNo,
-      created_at: order.createdAt,
-      payment_method: order.paymentMethod,
-      tax_pct: order.taxPct,
-      discount_iqd: order.discountIqd,
-      subtotal_iqd: order.subtotalIqd,
-      tax_iqd: order.taxIqd,
-      total_iqd: order.totalIqd,
-      note: order.note
-    },
-    items: order.items
-  });
-});
+  const insertOrder = db.prepare(`
+    INSERT INTO orders(order_no,table_no,captain_username,payment_method,tax_pct,discount_iqd,subtotal_iqd,tax_iqd,total_iqd,status,note)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+  `);
+  const insertItem = db.prepare(`
+    INSERT INTO order_items(order_id,product_id,name,price_iqd,qty,line_total_iqd)
+    VALUES (?,?,?,?,?,?)
+  `);
 
-// ===== تقارير =====
-app.get("/api/reports/today", requireAdmin, (req, res) => {
-  const key = todayKey();
-  const todays = store.orders.filter((o) => o.createdAt.slice(0, 10) === key);
-
-  const totalSales = todays.reduce((s, o) => s + o.totalIqd, 0);
-  const count = todays.length;
-
-  const byPayment = { cash: 0, card: 0, credit: 0 };
-  for (const o of todays) byPayment[o.paymentMethod] += o.totalIqd;
-
-  const itemMap = new Map(); // name -> {qty, total}
-  for (const o of todays) {
-    for (const it of o.items) {
-      const prev = itemMap.get(it.name) || { qty: 0, total: 0 };
-      prev.qty += it.qty;
-      prev.total += it.line_total_iqd;
-      itemMap.set(it.name, prev);
+  const tx = db.transaction(()=>{
+    const info = insertOrder.run(
+      order_no, table_no, req.session.user.username,
+      null, tax_pct, discount_iqd, subtotal, tax_iqd, total_iqd,
+      "open", note
+    );
+    const orderId = info.lastInsertRowid;
+    for(const it of cleanItems){
+      insertItem.run(orderId, it.product_id, it.name, it.price_iqd, it.qty, it.line_total_iqd);
     }
-  }
-  const topItems = Array.from(itemMap.entries())
-    .map(([name, v]) => ({ name, qty: v.qty, total_iqd: v.total }))
-    .sort((a, b) => b.total_iqd - a.total_iqd)
-    .slice(0, 10);
-
-  res.json({ date: key, count, total_sales_iqd: totalSales, by_payment: byPayment, top_items: topItems });
-});
-
-app.get("/api/reports/range", requireAdmin, (req, res) => {
-  const from = String(req.query.from || todayKey()).slice(0, 10);
-  const to = String(req.query.to || todayKey()).slice(0, 10);
-
-  const inRange = store.orders.filter((o) => {
-    const k = o.createdAt.slice(0, 10);
-    return k >= from && k <= to;
+    return orderId;
   });
 
-  const totalSales = inRange.reduce((s, o) => s + o.totalIqd, 0);
-  const count = inRange.length;
-
-  res.json({ from, to, count, total_sales_iqd: totalSales });
+  const orderId = tx();
+  const order = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId);
+  const orderItems = db.prepare("SELECT * FROM order_items WHERE order_id=?").all(orderId);
+  res.json({ order, items: orderItems });
 });
 
-// ===== تشغيل =====
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, "0.0.0.0", () => console.log("Running on port", PORT));
+// ===== API: cashier list open orders =====
+app.get("/api/orders/open", requireRole("admin","cashier"), (req,res)=>{
+  const orders = db.prepare(`
+    SELECT id,order_no,table_no,created_at,captain_username,total_iqd,note
+    FROM orders
+    WHERE status='open'
+    ORDER BY created_at DESC
+    LIMIT 100
+  `).all();
+  res.json({ orders });
+});
+
+app.get("/api/orders/:id", requireRole("admin","cashier"), (req,res)=>{
+  const id = Number(req.params.id);
+  const order = db.prepare("SELECT * FROM orders WHERE id=?").get(id);
+  if(!order) return res.status(404).json({error:"Not found"});
+  const items = db.prepare("SELECT * FROM order_items WHERE order_id=?").all(id);
+  res.json({ order, items });
+});
+
+// ===== API: cashier marks PAID =====
+app.post("/api/orders/:id/pay", requireRole("admin","cashier"), (req,res)=>{
+  const id = Number(req.params.id);
+  const payment_method = ["cash","card","credit"].includes(req.body.payment_method) ? req.body.payment_method : "cash";
+  db.prepare("UPDATE orders SET status='paid', payment_method=? WHERE id=? AND status='open'").run(payment_method, id);
+
+  const order = db.prepare("SELECT * FROM orders WHERE id=?").get(id);
+  const items = db.prepare("SELECT * FROM order_items WHERE order_id=?").all(id);
+  res.json({ order, items });
+});
+
+// ===== Reports (admin only) =====
+app.get("/api/reports/today", requireRole("admin"), (req,res)=>{
+  const key = new Date().toISOString().slice(0,10);
+  const rows = db.prepare(`SELECT * FROM orders WHERE status='paid' AND substr(created_at,1,10)=?`).all(key);
+
+  const total = rows.reduce((s,o)=>s+o.total_iqd,0);
+  const byCaptain = {};
+  for(const o of rows){
+    byCaptain[o.captain_username] = (byCaptain[o.captain_username]||0) + o.total_iqd;
+  }
+  res.json({ date:key, count:rows.length, total_sales_iqd: total, by_captain: byCaptain });
+});
+
+app.listen(PORT, "0.0.0.0", ()=>console.log("Running on", PORT));
