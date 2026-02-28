@@ -1,0 +1,106 @@
+<%- include("layout", {
+  title: "شاشة الكاشير",
+  user,
+  body: `
+  <div class="row g-3">
+    <div class="col-12 col-lg-6">
+      <div class="card glass p-3">
+        <div class="d-flex justify-content-between align-items-center">
+          <h5 class="fw-bold m-0">أوردرات مفتوحة</h5>
+          <button id="reload" class="btn btn-outline-light btn-sm">تحديث</button>
+        </div>
+        <div id="list" class="mt-3 vstack gap-2"></div>
+      </div>
+    </div>
+
+    <div class="col-12 col-lg-6">
+      <div class="card glass p-3">
+        <h5 class="fw-bold">تفاصيل + تم الدفع</h5>
+        <div id="details" class="text-secondary mt-2">اختار أوردر من اليسار.</div>
+
+        <div class="mt-3">
+          <label class="form-label text-secondary small">طريقة الدفع</label>
+          <select id="payMethod" class="form-select">
+            <option value="cash">كاش</option>
+            <option value="card">بطاقة</option>
+            <option value="credit">آجل</option>
+          </select>
+        </div>
+
+        <button id="payBtn" class="btn btn-primary mt-3" disabled>تم الدفع</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  const $=id=>document.getElementById(id);
+  const fmt=n=>(Math.round(Number(n)||0)).toLocaleString("ar-IQ")+" د.ع";
+  const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
+
+  let selectedId=null;
+
+  $("reload").onclick=loadOpen;
+  $("payBtn").onclick=paySelected;
+
+  loadOpen();
+
+  async function loadOpen(){
+    selectedId=null;
+    $("payBtn").disabled=true;
+    $("details").innerHTML="اختار أوردر من اليسار.";
+    const r=await fetch("/api/orders/open");
+    const data=await r.json();
+    const orders=data.orders||[];
+    $("list").innerHTML="";
+    if(!orders.length){
+      $("list").innerHTML='<div class="text-secondary">ماكو أوردرات مفتوحة.</div>';
+      return;
+    }
+    orders.forEach(o=>{
+      const div=document.createElement("div");
+      div.className="p-2 rounded-3 bg-dark bg-opacity-50 border border-light border-opacity-10";
+      div.style.cursor="pointer";
+      div.innerHTML=\`
+        <div class="d-flex justify-content-between">
+          <div>
+            <div class="fw-bold">#\${o.order_no} • طاولة \${esc(o.table_no)}</div>
+            <div class="text-secondary small">كابتن: \${esc(o.captain_username)} • \${new Date(o.created_at).toLocaleString("ar-IQ")}</div>
+          </div>
+          <div class="fw-bold">\${fmt(o.total_iqd)}</div>
+        </div>\`;
+      div.onclick=()=>loadDetails(o.id);
+      $("list").appendChild(div);
+    });
+  }
+
+  async function loadDetails(id){
+    selectedId=id;
+    const r=await fetch("/api/orders/"+id);
+    const data=await r.json();
+    const o=data.order, items=data.items||[];
+    $("payBtn").disabled=false;
+
+    const rows=items.map(i=>\`<tr><td>\${esc(i.name)}</td><td>\${i.qty}</td><td>\${fmt(i.line_total_iqd)}</td></tr>\`).join("");
+    $("details").innerHTML=\`
+      <div class="mb-2"><b>#\${o.order_no}</b> • طاولة <b>\${esc(o.table_no)}</b> • كابتن <b>\${esc(o.captain_username)}</b></div>
+      <div class="table-responsive">
+        <table class="table table-dark table-hover">
+          <thead><tr><th>الصنف</th><th>عدد</th><th>مجموع</th></tr></thead>
+          <tbody>\${rows}</tbody>
+        </table>
+      </div>
+      <div class="d-flex justify-content-between"><span class="text-secondary">الإجمالي</span><b>\${fmt(o.total_iqd)}</b></div>
+    \`;
+  }
+
+  async function paySelected(){
+    if(!selectedId) return;
+    const method=$("payMethod").value;
+    const r=await fetch("/api/orders/"+selectedId+"/pay",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({payment_method:method})});
+    const data=await r.json();
+    if(!r.ok) return alert("صار خطأ.");
+    alert("تم الدفع ✅");
+    await loadOpen();
+  }
+  </script>
+`}) %>
