@@ -1,0 +1,50 @@
+<%- include("layout", {
+  title: "إدارة المستخدمين",
+  user,
+  body: `
+  <div class="row g-3">
+    <div class="col-12 col-lg-4">
+      <div class="card glass p-3">
+        <h5 class="fw-bold mb-3">إضافة مستخدم</h5>
+        <form method="post" action="/admin/users" class="d-grid gap-2">
+          <input class="form-control" name="username" placeholder="username (بالإنكليزي)" required>
+          <input class="form-control" name="password" placeholder="password" required>
+          <select class="form-select" name="role">
+            <option value="captain">Captain</option>
+            <option value="cashier">Cashier</option>
+            <option value="admin">Admin</option>
+          </select>
+          <button class="btn btn-primary">إضافة</button>
+          <div class="text-secondary small">
+            افتراضياً: admin/admin123 و cashier/cashier123
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="col-12 col-lg-8">
+      <div class="card glass p-3">
+        <h5 class="fw-bold mb-3">كل المستخدمين</h5>
+        <div class="table-responsive">
+          <table class="table table-dark table-hover align-middle">
+            <thead><tr><th>Username</th><th>Role</th><th>الحالة</th><th></th></tr></thead>
+            <tbody>
+              ${users.map(u=>`
+                <tr>
+                  <td>${u.username}</td>
+                  <td class="text-secondary">${u.role}</td>
+                  <td>${u.is_active ? `<span class="badge text-bg-success">فعال</span>` : `<span class="badge text-bg-secondary">موقوف</span>`}</td>
+                  <td class="text-end">
+                    <form method="post" action="/admin/users/${u.id}/toggle">
+                      <button class="btn btn-sm btn-outline-light">${u.is_active ? "إيقاف" : "تفعيل"}</button>
+                    </form>
+                  </td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+`}) %>
