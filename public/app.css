@@ -1,0 +1,12 @@
+.bg-app{background: radial-gradient(1000px 500px at 10% 0%, #1b2a55 0%, #0b1220 55%);}
+.glass{background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.03));
+  border:1px solid rgba(255,255,255,.12); border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.25);}
+.pos-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(170px, 1fr)); gap:10px;}
+.pos-card{background: rgba(0,0,0,.25); border:1px solid rgba(255,255,255,.12); border-radius:14px; padding:10px;}
+.pos-card .name{font-weight:800;}
+.pos-card .meta{color:rgba(255,255,255,.65); font-size:12px;}
+.chip{border:1px solid rgba(255,255,255,.14); background: rgba(0,0,0,.25);
+  padding:6px 10px; border-radius:999px; cursor:pointer; user-select:none; font-size:12px;}
+.chip.active{outline:2px solid rgba(13,110,253,.55);}
+.print-area{padding:18px; width:80mm; color:#000; background:#fff; font-family:Tahoma,Arial;}
+@media print{body *{visibility:hidden} #printArea,#printArea *{visibility:visible} #printArea{position:absolute; top:0; left:0}}
