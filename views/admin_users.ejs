@@ -1,50 +1,112 @@
-<%- include("layout", {
-  title: "إدارة المستخدمين",
-  user,
-  body: `
-  <div class="row g-3">
-    <div class="col-12 col-lg-4">
-      <div class="card glass p-3">
-        <h5 class="fw-bold mb-3">إضافة مستخدم</h5>
-        <form method="post" action="/admin/users" class="d-grid gap-2">
-          <input class="form-control" name="username" placeholder="username (بالإنكليزي)" required>
-          <input class="form-control" name="password" placeholder="password" required>
-          <select class="form-select" name="role">
-            <option value="captain">Captain</option>
-            <option value="cashier">Cashier</option>
-            <option value="admin">Admin</option>
-          </select>
-          <button class="btn btn-primary">إضافة</button>
-          <div class="text-secondary small">
-            افتراضياً: admin/admin123 و cashier/cashier123
-          </div>
-        </form>
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>إدارة المستخدمين</title>
+  <link rel="stylesheet" href="/public/app.css" />
+  <style>
+    .wrap{max-width:1000px;margin:24px auto;padding:0 12px}
+    .top{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+    .card{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:14px}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:10px;border-bottom:1px solid rgba(255,255,255,.08);text-align:right}
+    input,select,button{padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,.15);background:rgba(0,0,0,.2);color:#fff}
+    button{cursor:pointer}
+    .row{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:10px}
+    .hint{opacity:.8;font-size:13px}
+    .danger{background:rgba(255,0,0,.12);border-color:rgba(255,0,0,.25)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div>
+        <h2 style="margin:0">إدارة المستخدمين</h2>
+        <div class="hint">أنت داخل كـ: <b><%= user.username %></b> (<%= user.role %>)</div>
       </div>
+      <form method="post" action="/logout">
+        <button type="submit">تسجيل خروج</button>
+      </form>
     </div>
 
-    <div class="col-12 col-lg-8">
-      <div class="card glass p-3">
-        <h5 class="fw-bold mb-3">كل المستخدمين</h5>
-        <div class="table-responsive">
-          <table class="table table-dark table-hover align-middle">
-            <thead><tr><th>Username</th><th>Role</th><th>الحالة</th><th></th></tr></thead>
-            <tbody>
-              ${users.map(u=>`
-                <tr>
-                  <td>${u.username}</td>
-                  <td class="text-secondary">${u.role}</td>
-                  <td>${u.is_active ? `<span class="badge text-bg-success">فعال</span>` : `<span class="badge text-bg-secondary">موقوف</span>`}</td>
-                  <td class="text-end">
-                    <form method="post" action="/admin/users/${u.id}/toggle">
-                      <button class="btn btn-sm btn-outline-light">${u.is_active ? "إيقاف" : "تفعيل"}</button>
-                    </form>
-                  </td>
-                </tr>
-              `).join("")}
-            </tbody>
-          </table>
-        </div>
+    <div class="card" style="margin-top:14px">
+      <h3 style="margin-top:0">إضافة كابتن / كاشير / مالك</h3>
+      <div class="row">
+        <input id="u" placeholder="اسم المستخدم" />
+        <input id="p" placeholder="كلمة المرور" type="password" />
+        <select id="r">
+          <option value="captain">Captain (كابتن)</option>
+          <option value="cashier">Cashier (كاشير)</option>
+          <option value="admin">Admin (مالك)</option>
+        </select>
+        <button onclick="addUser()">إضافة</button>
       </div>
+      <div id="msg" class="hint" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h3 style="margin-top:0">قائمة المستخدمين</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>اليوزر</th>
+            <th>الدور</th>
+            <th>تاريخ</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <% users.forEach(x => { %>
+            <tr>
+              <td><%= x.id %></td>
+              <td><%= x.username %></td>
+              <td><%= x.role %></td>
+              <td><%= x.created_at %></td>
+              <td>
+                <button class="danger" onclick="delUser(<%= x.id %>)">حذف</button>
+              </td>
+            </tr>
+          <% }) %>
+        </tbody>
+      </table>
+      <div class="hint" style="margin-top:10px">ملاحظة: لا تمسح حسابك (admin) حتى لا تنحظر.</div>
     </div>
   </div>
-`}) %>
+
+<script>
+async function addUser(){
+  const msg = document.getElementById('msg');
+  msg.textContent = '...جاري الإضافة';
+  const username = document.getElementById('u').value.trim();
+  const password = document.getElementById('p').value;
+  const role = document.getElementById('r').value;
+
+  if(!username || !password){ msg.textContent = 'اكتب اسم المستخدم وكلمة المرور'; return; }
+
+  const res = await fetch('/api/admin/users', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({username,password,role})
+  });
+
+  const data = await res.json().catch(()=> ({}));
+  if(res.ok && data.ok){
+    msg.textContent = '✅ تمت الإضافة';
+    location.reload();
+  } else {
+    msg.textContent = '❌ ' + (data.msg || 'صار خطأ');
+  }
+}
+
+async function delUser(id){
+  if(!confirm('متأكد تريد تحذف المستخدم؟')) return;
+  const res = await fetch('/api/admin/users/' + id + '/delete', { method:'POST' });
+  const data = await res.json().catch(()=> ({}));
+  if(res.ok && data.ok) location.reload();
+  else alert(data.msg || 'صار خطأ');
+}
+</script>
+</body>
+</html>
