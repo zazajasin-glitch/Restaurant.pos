@@ -132,8 +132,16 @@ app.get("/admin/users", requireRole("admin"), (req, res) => {
 });
 
 app.get("/admin/products", requireRole("admin"), (req, res) => {
-  const products = db.prepare(`SELECT * FROM products ORDER BY id DESC`).all();
-  res.render("admin_products", { user: req.session.user, products, cats });
+
+  const products = db.prepare(`SELECT * FROM products`).all();
+  const cats = db.prepare(`SELECT * FROM categories`).all();
+
+  res.render("admin_products", {
+    user: req.session.user,
+    products,
+    cats
+  });
+
 });
 
 // Captain POS page
